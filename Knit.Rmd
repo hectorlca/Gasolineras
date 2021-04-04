@@ -1,0 +1,517 @@
+---
+title: "Resultados Análisis Gasolineras"
+author: "Hector Corrales"
+date: "3/18/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+# Load Libraries and Import Data 
+
+```{r setup, include=FALSE}
+
+# Libraries
+
+library (plyr)
+library (dplyr)
+library (readxl)
+library (highcharter)
+library (dygraphs)
+library (lubridate)
+library (stringr)
+library (ggplot2)
+library (viridis)
+library (ggExtra)
+library (esquisse)
+library (readr)
+library (shiny)
+library (htmlwidgets)
+library (DT)
+library (zoo)
+library (magrittr)
+library(tidyquant)
+library(shiny.semantic)
+library(ggthemes)
+```
+
+# Import Data
+
+```{r Data, include=FALSE}
+# Data
+
+invoiceMorazan <- read_excel("data/morazan.xls", sheet = "HInvoice") %>%
+  select (Cajero, CliID, InvoiceNumber, VentaTotal, SysDate, StoreId, CAI, Counter)
+
+clientesMorazan <- read_excel("data/morazan.xls", sheet = "Cliente") %>%
+  select(CliID, CliName, CliCredito)
+
+invoiceLuisiana <- read_excel("data/luisiana.xls", sheet = "HInvoice") %>%
+  select (Cajero, CliID, InvoiceNumber, VentaTotal, SysDate, StoreId, CAI, Counter)
+  
+clientesLuisiana <- read_excel("data/luisiana.xls", sheet = "Cliente") %>%
+select(CliID, CliName, CliCredito)
+
+
+```
+
+
+
+# Scrub & Merge
+
+```{r Scrub and Merge, echo = FALSE}
+
+### Unir tablas
+
+mergedMorazan <- 
+  left_join (invoiceMorazan, clientesMorazan, by = "CliID") %>%
+  mutate (estacion = "Morazan")
+
+mergedLuisiana <- 
+  left_join (invoiceLuisiana, clientesLuisiana, by = "CliID") %>%
+  mutate (estacion = "Luisiana")
+
+merged <- rbind(mergedMorazan, mergedLuisiana)
+
+rm(mergedLuisiana, mergedMorazan, invoiceLuisiana, invoiceMorazan, clientesLuisiana, clientesMorazan)
+
+### Estandarizar CliID ###
+
+merged$CliID <- 
+  str_remove_all(merged$CliID, "[-_ N=.a-zA-Z]") %>%
+  trimws() %>%
+  stringr::str_replace('\\*', "") %>%
+  stringr::str_replace('\\/', "")
+  
+merged$CliName <- stringr::str_replace(merged$CliName, 'Ñ', "N")
+merged$CliName <- stringr::str_replace(merged$CliName, 'Ñ', "N")
+merged$CliName <- stringr::str_replace(merged$CliName, 'CLINICA LA AMISTA', "Consumidor Final")
+
+merged$CliID <- 
+  ifelse(
+    startsWith(merged$CliID, "9"), 
+    yes = "XXXXXXXXXXXXXX",
+    no = merged$CliID)
+
+### Finalizar Data Set ###
+
+mainData <- 
+  select(merged,
+         estacion,
+         InvoiceNumber,
+         stamp = SysDate,
+         CliID,
+         CliName,
+         VentaTotal) %>%
+  mutate(hour = hour(stamp),
+         weekday = wday(stamp, label = TRUE, week_start =  getOption("lubridate.week.start", 1)),
+         monthday = mday(stamp),
+         month = month(stamp),
+         year = year(stamp))
+
+mainData$CliID <- as.character(mainData$CliID)
+
+#write.csv (mainData, "data/maindata.csv")
+
+#getOption("scipen")
+#options(scipen=500)
+```
+
+
+
+```{r Datasets for Graphs, echo=FALSE}
+### Hourly Data
+
+hourlydata <- 
+  group_by(mainData, estacion, hour, weekday, monthday, month, year) %>%
+  summarise(despachos = n(),
+            ventaTotal = sum(VentaTotal),
+            facturaPromedio = mean (VentaTotal))
+
+weeklydata <- 
+  group_by(mainData, estacion, weekday, monthday, month, year) %>%
+  summarise(despachos = n(),
+            ventaTotal = sum(VentaTotal),
+            facturaPromedio = mean (VentaTotal))
+
+
+
+
+```
+
+
+
+# Hourly Dot Plot
+
+```{r Hourly Dot Plot, fig.width= 10, fig.height=8, fig.align="center",  echo=TRUE}
+
+### Hourly Dot Plot ### 
+
+hourdaydotplot <- 
+  hourlydata %>%
+  
+  filter(  #estacion == "Morazan" & 
+           despachos >= 0 & despachos <= 110 &
+    #       ventaTotal >= 0 & ventaTotal <= 16000000 &
+           hour > 4) %>%
+  
+  ggplot() +
+  aes(x = hour, y = despachos, colour = (-1*despachos)) +
+  geom_jitter(shape = 16, size = 5, width = 0.3, alpha = 0.3) +
+  geom_smooth(method = "loess", span = 0.2) +
+  scale_color_viridis_c(option = "viridis") +
+  theme_minimal() 
+
+hourdaydotplot
+
+
+```
+
+
+
+# Weekday-hourly Dot Plot
+
+```{r Weekday-hourly Facet, fig.align="center"}
+
+facet.labs <- c("Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo")
+names(facet.labs) <- c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+hourdaydotplot <- 
+  hourlydata %>%
+
+  filter(despachos >= 0 & despachos <= 150) %>%
+  #filter(VentaTotal >= 
+   #        0 & VentaTotal <= 60000) %>%
+  #filter(hour > 4) %>%
+  
+  ggplot() +
+  aes(x = hour, y = despachos, colour = (-1*despachos)) +
+  geom_jitter(shape = 16, size = 5, width = 0.3, alpha = 0.5) +
+  geom_smooth(method = "loess", span = 0.2) +
+  scale_color_viridis_c(option = "magma") +
+  theme_minimal() +
+  facet_wrap(~ weekday, ncol=3, labeller = labeller(weekday = facet.labs)) +
+  
+
+  labs(title = "Comportamiento Horario por Día de la Semana",
+    x = "Hora del Día", y = "Despachos", colour = "Numero de Despachos") + 
+  theme(axis.title = element_text(size  =  14, face  =  'bold', colour  =  'gray30'), 
+        strip.text = element_text(size=12, colour = "gray30")) + 
+  theme(plot.title = element_text(family  =  'sans', size  =  30, colour  =  'gray30', hjust  =  0.5, vjust = 0)) + 
+  theme(legend.text = element_text(size  =  10, colour  =  'gray30')) + 
+  theme(legend.title = element_text(size  =  12, colour  =  'gray30')) 
+
+
+hourdaydotplot 
+
+```
+
+
+
+
+# Day of Week Boxplot
+
+```{r DOW_Boxplot, echo = FALSE, fig.align="center"}
+
+
+weeklydata %>%
+ filter(despachos >= 1L & despachos <= 1217L) %>%
+ ggplot() +
+ aes(x = weekday, y = despachos, fill = despachos) +
+ geom_boxplot() +
+ scale_fill_gradient() +
+ labs(x = "Dia de la Semana", y = "Despachos", title = "Despachos por Dia", subtitle = "Mostrando Cuartiles") +
+ theme_minimal()
+
+
+
+
+```
+
+
+
+# Some Parsing
+
+```{r echo=FALSE}
+
+mainData <- mainData %>%
+  mutate(idYear = substr(CliID, 5,8))
+
+  
+  
+  
+
+```
+
+
+
+
+
+# Clasificacion de Clientes: Organizacion/Individuo
+
+```{r Customer Data Wrangle, echo = FALSE}
+
+
+### Nota: Me gustaria cuadrar los numeros que yo he calculado con el archivo resumen que mandaron sobre ventas mensuales
+### sin embargo, no hay info relevante de morazan, ni desglose de galones por tipo de combustible
+### se corroboró que las ventas totales coincidian en luisiana, para el mes de frebrero 2021.
+
+
+customerBase <- mainData
+
+
+customerBase$CliID <- ifelse(nchar(as.character(customerBase$CliID != 14)), 
+                             yes = "11111111111111",
+                             no = customerBase$CliID)
+
+customerBase$CliName <-
+  ifelse(customerBase$CliName == "CLINICA LA AMISTA",
+         yes = "Consumidor Final",
+         no = customerBase$CliName)
+
+#Crear Tabla Resumen de Visitas por cliente/mes/año
+
+customerSum <- 
+  customerBase %>%
+  group_by(CliID, stamp, CliName, estacion, month, year) %>%
+  summarise(visitas = n(),
+            facturado = sum(VentaTotal))  %>%
+  mutate(idYear = substr(CliID, 5,8))
+
+customerSum$fecha <- as.Date(
+  paste0(customerSum$year, "-", customerSum$month, "-1"))
+
+
+# Clasificar Data de Clientes para Determinar si son Individio u Organizacion.
+
+
+customerSum$cliCat <- "Individuo"
+
+customerSum$cliCat <- ifelse(substr(customerSum$idYear, 1, 1) == '9',
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('R.L', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('R.L.', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('R L', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+
+customerSum$cliCat <- ifelse(grepl('DE CV', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+
+customerSum$cliCat <- ifelse(grepl('C.V.', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl(' RL', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl(' S A', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('S.A', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('INVER', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('PORTE', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('INDUST', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('S.A', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('COM', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('REST', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('SA DE CV', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('SERV', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl(' Y ', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('AGR', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('AGR', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('ONSTR', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('OTEL', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('AGENC', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('REP', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('PMOP', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('MILITAR', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('IMPOR', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('INTER', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+
+customerSum$cliCat <- ifelse(grepl('HONDU', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+
+customerSum$cliCat <- ifelse(grepl('TEC', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+
+customerSum$cliCat <- ifelse(grepl('GLOB', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('DIS', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('COSSYM', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('CORP', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('PROD', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('SEC', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('MINI', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('TAL', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('CASA', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+customerSum$cliCat <- ifelse(grepl('IH', customerSum$CliName, fixed = TRUE),
+                     yes = "Organizacion",
+                     no = customerSum$cliCat)
+
+
+
+### Approximate Customer Profile
+
+customerProfile <- 
+    customerSum %>%
+    filter(CliName != "Consumidor Final") %>%
+    group_by(CliID, idYear, CliName, cliCat, fecha)%>%
+    summarise(visitasxmes = sum(visitas),
+              customerFacturado = sum(facturado)) %>%
+    mutate(Edad = as.numeric(year(today()))-as.numeric(year(idYear)))
+
+
+as.numeric(year(today())) - as.numeric(customerSum$idYear)
+
+  
+
+```
+
+
+# Tabla de Comportamiento de Cliente
+
+```{r Customer-Datatable, fig.align="center"}
+
+
+
+
+DT::datatable(customerSum, colnames = c("Cliente", "Mes", "Año", "Visitas", "Facturado", "Fecha"),
+              filter = 'top', 
+              options = list(pageLength =20, autoWidth = TRUE,
+                             columnDefs = list(list(className = 'dt-center', targets = 0:6))
+                             ),
+              rownames = TRUE
+              )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
